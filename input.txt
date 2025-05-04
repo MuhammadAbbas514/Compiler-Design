@@ -1,0 +1,20 @@
+int main() {
+int age;
+string name;
+string less;
+string more;
+less := "You are a minor";
+more := "You are an adult";
+scan(name);
+
+scan(age);
+
+print(name);
+print(age);
+if (age >= 18) {
+print(more);
+} else {
+print(less);
+}
+return 0;
+}
