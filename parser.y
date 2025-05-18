@@ -10,14 +10,18 @@
 extern int yylex();
 extern FILE* yyin;
 extern int lineNum;
+extern bool hasError;
+extern char* yytext;
 
 void yyerror(const char* s);
 
 std::vector<std::string> threeAddressCode;
 std::string currentBaseType;
+std::vector<std::string> currentArgumentTypes;
 int tempVarCounter = 0;
 int labelCounter = 0;
 int parameterCount = 0;
+bool inFunctionBody = false;
 
 std::string newTemp() {
     return "t" + std::to_string(tempVarCounter++);
@@ -27,50 +31,110 @@ std::string newLabel() {
     return "L" + std::to_string(labelCounter++);
 }
 
+struct ExprType {
+    std::string type;
+    std::string value;
+};
+
 struct SymbolInfo {
     std::string name;
     std::string type;
     bool isFunction;
     std::vector<std::string> paramTypes;
+    int scope;
 };
 
 std::vector<SymbolInfo> symbolTable;
+int currentScope = 0;
 bool hasMainFunction = false;
 std::string currentFunctionType;
+std::vector<std::string> currentParameterTypes;
+
+void enterScope() {
+    currentScope++;
+}
+
+void exitScope() {
+    for (auto it = symbolTable.begin(); it != symbolTable.end();) {
+        if (it->scope == currentScope) {
+            it = symbolTable.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    currentScope--;
+}
 
 bool addSymbol(const std::string& name, const std::string& type, bool isFunction = false) {
     for (const auto& symbol : symbolTable) {
-        if (symbol.name == name) {
-            return false; 
+        if (symbol.name == name && symbol.scope == currentScope) {
+            return false;
         }
     }
     
-    symbolTable.push_back({name, type, isFunction});
+    SymbolInfo newSymbol = {name, type, isFunction, {}, currentScope};
+    if (isFunction) {
+        newSymbol.paramTypes = currentParameterTypes;
+    }
+    symbolTable.push_back(newSymbol);
     return true;
 }
 
-std::string inferType(const std::string &expr) {
-	std::cout<<expr;
+std::string checkType(const std::string& expr) {
+    if (expr.empty()) return "unknown";
     
-    if (expr.empty()) return "unknown"; 
-    if (expr[0] == '"') return "string"; 
+    if (expr[0] == '"') return "string";
+    if (expr[0] == '\'') return "char";
+    if (expr == "true" || expr == "false") return "bool";
+    
     try {
-        std::stoi(expr); 
+        std::stoi(expr);
         return "int";
     } catch (std::invalid_argument&) {
         try {
-            std::stof(expr); 
+            std::stof(expr);
             return "float";
         } catch (std::invalid_argument&) {
-            return "unknown"; 
+            for (const auto& symbol : symbolTable) {
+                if (symbol.name == expr) {
+                    return symbol.type;
+                }
+            }
+            return "unknown";
         }
     }
 }
 
+bool areTypesCompatible(const std::string& type1, const std::string& type2, const std::string& operation) {
+    if (operation == "assign") {
+        return type1 == type2;
+    }
+    
+    if (operation == "+" || operation == "-" || operation == "*" || operation == "/" || operation == "%") {
+        return (type1 == "int" && type2 == "int");
+    }
+    
+    if (operation == "<" || operation == ">" || operation == "<=" || operation == ">=" || 
+        operation == "==" || operation == "!=") {
+        return ((type1 == "int" && type2 == "int") || 
+                (type1 == "bool" && type2 == "bool") ||
+                (type1 == "char" && type2 == "char") ||
+                (type1 == "string" && type2 == "string"));
+    }
+    
+    if (operation == "and" || operation == "or") {
+        return (type1 == "bool" && type2 == "bool");
+    }
+    
+    return false;
+}
+
 SymbolInfo* findSymbol(const std::string& name) {
-    for (auto& symbol : symbolTable) {
-        if (symbol.name == name) {
-            return &symbol;
+    for (int scope = currentScope; scope >= 0; scope--) {
+        for (auto& symbol : symbolTable) {
+            if (symbol.name == name && symbol.scope <= scope) {
+                return &symbol;
+            }
         }
     }
     return nullptr;
@@ -85,6 +149,8 @@ struct LoopLabels {
 
 std::vector<LoopLabels> loopLabelsStack;
 %}
+
+%define parse.error verbose
 
 %union {
     int int_val;
@@ -110,7 +176,7 @@ std::vector<LoopLabels> loopLabelsStack;
 %token <char_val> CHAR_LITERAL
 %token <id> ID
 
-%type <expr_val> Expression AndExpr NotExpr RelationalExpr AdditiveExpr MultExpr UnaryExpr Factor FunctionCall
+%type <expr_val> Expr AndExpr NotExpr RelationalExpr AdditiveExpr MultExpr UnaryExpr Factor FunctionCall
 %type <expr_val> ArgumentList Arguments
 %type <type> ReturnType BaseType
 %type <op_val> RelOp
@@ -149,20 +215,32 @@ MainFunction : INT MAIN '(' ')' {
 ;
 
 FunctionDeclarations : FunctionDeclarations FunctionDecl
-                      | /* empty */
+                      | 
 ;
 
 FunctionDecl : ReturnType ID {
+    enterScope();
+    inFunctionBody = true;
     currentFunctionType = $1;
+} '(' Parameters ')' {
+    int previousScope = currentScope;
+    currentScope = 0;
     if (!addSymbol($2, $1, true)) {
         std::string error = "Error: Function " + std::string($2) + " already defined";
         yyerror(error.c_str());
+    } else {
+        SymbolInfo* symbol = findSymbol($2);
+        if (symbol) {
+            symbol->paramTypes = currentParameterTypes;
+            currentParameterTypes.clear();
+        }
     }
-    std::string funcName = $2;
-    threeAddressCode.push_back("func_begin " + funcName);
-} '(' Parameters ')' CompoundStmt {
-    std::string funcName = $2;
-    threeAddressCode.push_back("func_end " + funcName);
+    currentScope = previousScope;
+    threeAddressCode.push_back("func_begin " + std::string($2));
+} CompoundStmt {
+    threeAddressCode.push_back("func_end " + std::string($2));
+    exitScope();
+    inFunctionBody = false;
     free($2);
 }
 ;
@@ -178,7 +256,7 @@ BaseType : INT { $$ = strdup("int"); currentBaseType = "int"; }
 ;
 
 Parameters : ParameterList
-           | /* empty */
+           | 
 ;
 
 ParameterList : Parameter
@@ -190,19 +268,19 @@ Parameter : BaseType ID {
         std::string error = "Error: Parameter " + std::string($2) + " already defined";
         yyerror(error.c_str());
     }
+    currentParameterTypes.push_back($1);
     free($2);
 }
 ;
 
 CompoundStmt : '{' {
-    
+    if (!inFunctionBody) enterScope();
 } LocalDeclarations StmtList '}' {
-    
-}
-;
+    if (!inFunctionBody) exitScope();
+};
 
 LocalDeclarations : VarDeclaration LocalDeclarations
-                  | /* empty */
+                  | 
 ;
 
 VarDeclaration : BaseType IdList ';' {
@@ -211,32 +289,26 @@ VarDeclaration : BaseType IdList ';' {
 ;
 
 IdList : IdInit
-       | IdInit ',' IdList
+       | IdList ',' IdInit
 ;
 
 IdInit : ID {
-    
     if (!addSymbol($1, currentBaseType)) {
         std::string error = "Error: Variable " + std::string($1) + " already defined";
         yyerror(error.c_str());
     }
     free($1);
 } 
-| ID ASSIGN Expression {
-    SymbolInfo* symbol = findSymbol($1);
+| ID ASSIGN Expr {
+    if (!addSymbol($1, currentBaseType)) {
+        std::string error = "Error: Variable " + std::string($1) + " already defined";
+        yyerror(error.c_str());
+    }
     
-
-    if (!symbol) {
-        if (!addSymbol($1, exprType)) {
-            std::string error = "Error: Variable " + std::string($1) + " already defined";
-            yyerror(error.c_str());
-        }
-    } else {
-        if (symbol->type != exprType) {
-            std::string error = "Error: Type mismatch in assignment to '" + std::string($1) +
-                                "'. Expected type '" + symbol->type + "', but got type '" + exprType + "'";
-            yyerror(error.c_str());
-        }
+    if (currentBaseType != exprType && exprType != "unknown") {
+        std::string error = "Error: Type mismatch in assignment to '" + std::string($1) + 
+                            "'. Expected '" + currentBaseType + "', but got '" + exprType + "'";
+        yyerror(error.c_str());
     }
 
     threeAddressCode.push_back(std::string($1) + " := " + std::string($3));
@@ -244,27 +316,26 @@ IdInit : ID {
 }
 ;
 
-
-StmtList : Statement StmtList
-         | /* empty */
+StmtList : Stmt StmtList
+         | 
 ;
 
-Statement : ExprStmt
+Stmt : ExprStmt
           | CompoundStmt
           | SelectionStmt
           | IterationStmt
           | ReturnStmt
           | IOStmt
+          | ';'
 ;
 
-ExprStmt : ID ASSIGN Expression ';' {
+ExprStmt : ID ASSIGN Expr ';' {
     SymbolInfo* symbol = findSymbol($1);
     if (!symbol) {
         std::string error = "Error: Variable " + std::string($1) + " used before declaration";
         yyerror(error.c_str());
     } else {
-        
-        if (symbol->type != exprType) {
+        if (symbol->type != exprType && exprType != "unknown") {
             std::string error = "Error: Type mismatch in assignment to '" + std::string($1) +
                                 "'. Expected '" + symbol->type + "', but got '" + exprType + "'";
             yyerror(error.c_str());
@@ -274,59 +345,36 @@ ExprStmt : ID ASSIGN Expression ';' {
     threeAddressCode.push_back(std::string($1) + " := " + std::string($3));
     free($1);
 }
+| Expr ';'
 ;
 
-
-SelectionStmt : IF '(' Expression ')' {
-    std::string elseLabel = newLabel();
+SelectionStmt : IF '(' Expr ')' {
+    if (exprType != "bool") {
+        yyerror("Error: Condition in if Stmt must be a boolean Expr");
+    }
+    
+    std::string falseLabel = newLabel();
     std::string endLabel = newLabel();
     
-    threeAddressCode.push_back("if " + std::string($3) + " == 0 goto " + elseLabel);
+    threeAddressCode.push_back("if " + std::string($3) + " == 0 goto " + falseLabel);
     
-    loopLabelsStack.push_back({elseLabel, endLabel});
-} MatchedStmt ELSE {
-    
+    loopLabelsStack.push_back({falseLabel, endLabel});
+} Stmt ElsePart
+;
+
+ElsePart : ELSE {
     threeAddressCode.push_back("goto " + loopLabelsStack.back().endLabel);
     
     threeAddressCode.push_back(loopLabelsStack.back().startLabel + ":");
-} MatchedStmt {
-    
+} Stmt {
     threeAddressCode.push_back(loopLabelsStack.back().endLabel + ":");
     loopLabelsStack.pop_back();
 }
-| IF '(' Expression ')' {
-    std::string endLabel = newLabel();
-    threeAddressCode.push_back("if " + std::string($3) + " == 0 goto " + endLabel);
-   
-    loopLabelsStack.push_back({"", endLabel});
-} Statement {
-   
+| {
+    threeAddressCode.push_back(loopLabelsStack.back().startLabel + ":");
     threeAddressCode.push_back(loopLabelsStack.back().endLabel + ":");
     loopLabelsStack.pop_back();
 }
-;
-
-MatchedStmt : ExprStmt
-            | CompoundStmt
-            | IF '(' Expression ')' {
-                std::string elseLabel = newLabel();
-                std::string endLabel = newLabel();
-                
-                threeAddressCode.push_back("if " + std::string($3) + " == 0 goto " + elseLabel);
-                loopLabelsStack.push_back({elseLabel, endLabel});
-            } MatchedStmt ELSE {
-                
-                threeAddressCode.push_back("goto " + loopLabelsStack.back().endLabel);
-                
-                threeAddressCode.push_back(loopLabelsStack.back().startLabel + ":");
-            } MatchedStmt {
-                
-                threeAddressCode.push_back(loopLabelsStack.back().endLabel + ":");
-                loopLabelsStack.pop_back();
-            }
-            | IterationStmt
-            | ReturnStmt
-            | IOStmt
 ;
 
 IterationStmt : WHILE {
@@ -334,13 +382,16 @@ IterationStmt : WHILE {
     threeAddressCode.push_back(startLabel + ":");
     
     loopLabelsStack.push_back({startLabel, ""});
-} '(' Expression ')' {
+} '(' Expr ')' {
+    if (exprType != "bool") {
+        yyerror("Error: Condition in while Stmt must be a boolean Expr");
+    }
+    
     std::string endLabel = newLabel();
     threeAddressCode.push_back("if " + std::string($4) + " == 0 goto " + endLabel);
     
     loopLabelsStack.back().endLabel = endLabel;
-} Statement {
-    
+} Stmt {
     threeAddressCode.push_back("goto " + loopLabelsStack.back().startLabel);
     
     threeAddressCode.push_back(loopLabelsStack.back().endLabel + ":");
@@ -348,12 +399,16 @@ IterationStmt : WHILE {
 }
 ;
 
-ReturnStmt : RETURN Expression ';' {
+ReturnStmt : RETURN Expr ';' {
+    if (currentFunctionType != exprType && exprType != "unknown" && currentFunctionType != "int") {
+        std::string error = "Error: Return type mismatch. Expected '" + currentFunctionType + 
+                           "', but got '" + exprType + "'";
+        yyerror(error.c_str());
+    }
     
     threeAddressCode.push_back("return " + std::string($2));
 }
 | RETURN ';' {
-    
     if (currentFunctionType != "void") {
         yyerror("Error: Non-void function must return a value");
     }
@@ -365,7 +420,7 @@ IOStmt : PrintStmt
        | ScanStmt
 ;
 
-PrintStmt : PRINT '(' Expression ')' ';' {
+PrintStmt : PRINT '(' Expr ')' ';' {
     threeAddressCode.push_back("param " + std::string($3));
     threeAddressCode.push_back("call print, 1");
 }
@@ -383,7 +438,11 @@ ScanStmt : SCAN '(' ID ')' ';' {
 }
 ;
 
-Expression : Expression OR AndExpr {
+Expr : Expr OR AndExpr {
+    if (exprType != "bool") {
+        yyerror("Error: Operands of OR operator must be boolean");
+    }
+    
     std::string temp = newTemp();
     threeAddressCode.push_back(temp + " := " + std::string($1) + " or " + std::string($3));
     $$ = strdup(temp.c_str());
@@ -395,6 +454,10 @@ Expression : Expression OR AndExpr {
 ;
 
 AndExpr : AndExpr AND NotExpr {
+    if (exprType != "bool") {
+        yyerror("Error: Operands of AND operator must be boolean");
+    }
+    
     std::string temp = newTemp();
     threeAddressCode.push_back(temp + " := " + std::string($1) + " and " + std::string($3));
     $$ = strdup(temp.c_str());
@@ -406,6 +469,10 @@ AndExpr : AndExpr AND NotExpr {
 ;
 
 NotExpr : NOT NotExpr {
+    if (exprType != "bool") {
+        yyerror("Error: Operand of NOT operator must be boolean");
+    }
+    
     std::string temp = newTemp();
     threeAddressCode.push_back(temp + " := not " + std::string($2));
     $$ = strdup(temp.c_str());
@@ -417,6 +484,13 @@ NotExpr : NOT NotExpr {
 ;
 
 RelationalExpr : AdditiveExpr RelOp AdditiveExpr {
+    std::string leftType = exprType;
+    std::string rightType = exprType;
+    
+    if (leftType != rightType) {
+        yyerror("Error: Type mismatch in relational Expr");
+    }
+    
     std::string temp = newTemp();
     std::string op;
     
@@ -448,6 +522,10 @@ RelOp : '<' { $$ = '<'; }
 ;
 
 AdditiveExpr : AdditiveExpr AddOp MultExpr {
+    if (exprType != "int") {
+        yyerror("Error: Type mismatch in additive Expr, expected int");
+    }
+    
     std::string temp = newTemp();
     char op = (char)$2;
     threeAddressCode.push_back(temp + " := " + std::string($1) + " " + op + " " + std::string($3));
@@ -464,6 +542,10 @@ AddOp : '+' { $$ = '+'; }
 ;
 
 MultExpr : MultExpr MultOp UnaryExpr {
+    if (exprType != "int") {
+        yyerror("Error: Type mismatch in multiplicative Expr, expected int");
+    }
+    
     std::string temp = newTemp();
     char op = (char)$2;
     threeAddressCode.push_back(temp + " := " + std::string($1) + " " + op + " " + std::string($3));
@@ -481,6 +563,10 @@ MultOp : '*' { $$ = '*'; }
 ;
 
 UnaryExpr : '-' Factor %prec UNARY_MINUS {
+    if (exprType != "int") {
+        yyerror("Error: Unary minus can only be applied to integers");
+    }
+    
     std::string temp = newTemp();
     threeAddressCode.push_back(temp + " := -" + std::string($2));
     $$ = strdup(temp.c_str());
@@ -524,37 +610,49 @@ Factor : INT_LITERAL {
     if (!symbol) {
         std::string error = "Error: Variable " + std::string($1) + " used before declaration";
         yyerror(error.c_str());
+        exprType = "unknown";
+    } else {
+        exprType = symbol->type;
     }
-    exprType = symbol ? symbol->type : "unknown";
     $$ = strdup($1);
     free($1);
 }
-| '(' Expression ')' {
+| '(' Expr ')' {
     $$ = $2;
 }
 ;
 
 FunctionCall : ID '(' { 
     parameterCount = 0;
-    }
-    Arguments ')' {
+    currentArgumentTypes.clear();
+} Arguments ')' {
     auto symbol = findSymbol($1);
     if (!symbol) {
-        std::string error = "Error: Function " + std::string($1) + " used before declaration";
-        yyerror(error.c_str());
+        yyerror(("Error: Function " + std::string($1) + " used before declaration").c_str());
+        exprType = "unknown";
+    } else if (!symbol->isFunction) {
+        yyerror(("Error: " + std::string($1) + " is not a function").c_str());
+        exprType = "unknown";
+    } else {
+        if (symbol->paramTypes.size() != parameterCount) {
+            yyerror(("Parameter count mismatch for " + std::string($1)).c_str());
+        } else {
+            for (int i = 0; i < parameterCount; ++i) {
+                if (currentArgumentTypes[i] != symbol->paramTypes[i]) {
+                    std::string msg = "Type mismatch for argument " + std::to_string(i+1) + 
+                                    " in " + std::string($1) + 
+                                    ". Expected '" + symbol->paramTypes[i] + 
+                                    "', got '" + currentArgumentTypes[i] + "'";
+                    yyerror(msg.c_str());
+                }
+            }
+        }
+        exprType = symbol->type;
     }
-    if (symbol && !symbol->isFunction) {
-        std::string error = "Error: " + std::string($1) + " is not a function";
-        yyerror(error.c_str());
-    }
-    
-   
     std::string temp = newTemp();
     threeAddressCode.push_back("call " + std::string($1) + ", " + std::to_string(parameterCount)); 
     threeAddressCode.push_back(temp + " := return_value");
     $$ = strdup(temp.c_str());
-    
-    exprType = symbol ? symbol->type : "unknown";
     free($1);
 }
 ;
@@ -562,18 +660,19 @@ FunctionCall : ID '(' {
 Arguments : ArgumentList {
     $$ = $1;
 }
-| /* empty */ {
+| {
     $$ = strdup("");
 }
 ;
 
-ArgumentList : ArgumentList ',' Expression {
-    
+ArgumentList : ArgumentList ',' Expr {
+    currentArgumentTypes.push_back(exprType);
     threeAddressCode.push_back("param " + std::string($3));
     parameterCount++;
     $$ = strdup(""); 
 }
-| Expression {
+| Expr {
+    currentArgumentTypes.push_back(exprType);
     threeAddressCode.push_back("param " + std::string($1));
     parameterCount = 1;
     $$ = strdup(""); 
@@ -583,5 +682,7 @@ ArgumentList : ArgumentList ',' Expression {
 %%
 
 void yyerror(const char* s) {
-    std::cerr << "Error at line " << lineNum << ": " << s << std::endl;
+    extern char* yytext;
+    std::cerr << "Error at line " << lineNum << ": " << s << " (near token: '" << yytext << "')" << std::endl;
+    hasError = true;
 }

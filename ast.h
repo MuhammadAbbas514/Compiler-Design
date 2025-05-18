@@ -4,39 +4,39 @@
 #include <string>
 #include <vector>
 
-class ASTNode;
-class Expression;
-class Statement;
-class Declaration;
+class node;
+class Expr;
+class Stmt;
+class Decl;
 
-class ASTNode {
+class node {
 public:
-    virtual ~ASTNode() {}
+    virtual ~node() {}
     virtual void generateCode(std::vector<std::string>& code) = 0;
 };
 
-class Statement : public ASTNode {
+class Stmt : public node {
 public:
-    virtual ~Statement() {}
+    virtual ~Stmt() {}
 };
 
-class Expression : public ASTNode {
+class Expr : public node {
 public:
     std::string type;
-    virtual std::string getExpressionType() { return type; }
+    virtual std::string getExprType() { return type; }
 };
 
-class BinaryExpression : public Expression {
+class BinaryExpr : public Expr {
 public:
-    Expression* left;
-    Expression* right;
+    Expr* left;
+    Expr* right;
     std::string op;
 
-    BinaryExpression(Expression* l, std::string o, Expression* r)
+    BinaryExpr(Expr* l, std::string o, Expr* r)
         : left(l), right(r), op(o) {
     }
 
-    ~BinaryExpression() {
+    ~BinaryExpr() {
         delete left;
         delete right;
     }
@@ -44,7 +44,7 @@ public:
     void generateCode(std::vector<std::string>& code) override;
 };
 
-class Variable : public Expression {
+class Variable : public Expr {
 public:
     std::string name;
 
@@ -53,34 +53,34 @@ public:
     void generateCode(std::vector<std::string>& code) override;
 };
 
-class AssignmentStatement : public Statement {
+class AssignmentStmt : public Stmt {
 public:
     std::string variable;
-    Expression* value;
+    Expr* value;
 
-    AssignmentStatement(const std::string& var, Expression* val)
+    AssignmentStmt(const std::string& var, Expr* val)
         : variable(var), value(val) {
     }
 
-    ~AssignmentStatement() {
+    ~AssignmentStmt() {
         delete value;
     }
 
     void generateCode(std::vector<std::string>& code) override;
 };
 
-class FunctionDeclaration : public ASTNode {
+class FunctionDecl : public node {
 public:
     std::string name;
     std::string returnType;
     std::vector<std::pair<std::string, std::string>> parameters;  // (type, name)
-    std::vector<Statement*> body;
+    std::vector<Stmt*> body;
 
-    FunctionDeclaration(const std::string& n, const std::string& rt)
+    FunctionDecl(const std::string& n, const std::string& rt)
         : name(n), returnType(rt) {
     }
 
-    ~FunctionDeclaration() {
+    ~FunctionDecl() {
         for (auto stmt : body) {
             delete stmt;
         }
@@ -89,29 +89,29 @@ public:
     void generateCode(std::vector<std::string>& code) override;
 };
 
-class Declaration : public ASTNode {
+class Decl : public node {
 public:
-    virtual ~Declaration() {}
+    virtual ~Decl() {}
 };
 
-class VariableDeclaration : public Declaration {
+class VariableDecl : public Decl {
 public:
     std::string type;
     std::string name;
-    Expression* initialValue;  // Can be nullptr
+    Expr* initialValue;  // Can be nullptr
 
-    VariableDeclaration(const std::string& t, const std::string& n, Expression* init = nullptr)
+    VariableDecl(const std::string& t, const std::string& n, Expr* init = nullptr)
         : type(t), name(n), initialValue(init) {
     }
 
-    ~VariableDeclaration() {
+    ~VariableDecl() {
         delete initialValue;
     }
 
     void generateCode(std::vector<std::string>& code) override;
 };
 
-inline void BinaryExpression::generateCode(std::vector<std::string>& code) {
+inline void BinaryExpr::generateCode(std::vector<std::string>& code) {
     
 }
 
@@ -119,15 +119,15 @@ inline void Variable::generateCode(std::vector<std::string>& code) {
     
 }
 
-inline void AssignmentStatement::generateCode(std::vector<std::string>& code) {
+inline void AssignmentStmt::generateCode(std::vector<std::string>& code) {
     
 }
 
-inline void FunctionDeclaration::generateCode(std::vector<std::string>& code) {
+inline void FunctionDecl::generateCode(std::vector<std::string>& code) {
     
 }
 
-inline void VariableDeclaration::generateCode(std::vector<std::string>& code) {
+inline void VariableDecl::generateCode(std::vector<std::string>& code) {
     
 }
 
